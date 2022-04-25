@@ -1,7 +1,7 @@
 import torch
 torch.manual_seed(0)
 from utils import NormalMixture1D
-from main import InferenceNetworkPQ_NormalMixture
+from main import InferenceNetworkPQ_NormalMixture, SeqGaussMixPosterior
 from matplotlib import pyplot as plt
 import seaborn as sns
 
@@ -24,7 +24,7 @@ def amortize_inference(inference_network, gen_traces_fn, optimizer, num_iteratio
     for i in range(num_iterations):
 
         x, obs = gen_traces_fn()
-        loss = inference_network(x, obs)
+        loss = inference_network(x, obs.unsqueeze(-1).unsqueeze(-1))
         print(i, loss)
         loss.backward()
         optimizer.step()
@@ -35,7 +35,7 @@ def amortize_inference(inference_network, gen_traces_fn, optimizer, num_iteratio
     return loss_history
 
 gen_traces_fn = lambda: get_traces(gen_model, 100, 1.0)
-inference_network = InferenceNetworkPQ_NormalMixture(10,1,2,200)
+inference_network = SeqGaussMixPosterior(2)
 optimizer = torch.optim.Adam(params=inference_network.parameters())
 
 

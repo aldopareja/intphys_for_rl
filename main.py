@@ -63,4 +63,41 @@ class InferenceNetworkPQ_NormalMixture(nn.Module):
         return -torch.mean(log_prob)
 
 
+class SeqGaussMixPosterior(nn.Module):
+    def __init__(self, num_mixtures):
+        super().__init__()
+        self.embed_obs = MLP(2, 10, output_size=10, unsqueeze=False)
+        self.decode_mu = MLP(1, 12, input_size=10,
+                             last_activation=lambda y: torch.tanh(y) * 10,
+                             unsqueeze=False)
+        self.decode_sigma = MLP(1, 12, input_size=10,
+                                last_activation=torch.exp,
+                                unsqueeze=False)
+        self.decode_mixture_prob = MLP(1, 12, input_size=10,
+                                       last_activation=torch.exp,
+                                       unsqueeze=False)
+        self.trans_dec = nn.TransformerDecoderLayer(d_model=10, nhead=2, dim_feedforward=20,
+                                                    batch_first=True, dropout=0.0)
 
+        self.start = torch.nn.Parameter(torch.rand(1, 1, 10))
+        self.num_mixtures = num_mixtures
+
+    def get_q_x_given_obs(self, obs):
+        obs_embed = self.embed_obs(obs)
+        so_far_decoded = self.start.expand(obs_embed.shape)
+        all_mu, all_sigma, all_mix_p = [], [], []
+        for _ in range(self.num_mixtures):
+            obs_dec = self.trans_dec(so_far_decoded, obs_embed)
+            so_far_decoded = torch.cat([so_far_decoded, obs_dec[:, -1:, :]], dim=-2).detach()
+            all_mu.append(self.decode_mu(obs_dec[:, -1:, :]))
+            all_sigma.append(self.decode_sigma(obs_dec[:, -1:, :]))
+            all_mix_p.append(self.decode_mixture_prob(obs_dec[:, -1:, :]))
+        mixture_probs =  torch.cat(all_mix_p, dim=1).reshape(len(obs),self.num_mixtures)
+        mu = torch.cat(all_mu, dim=1).reshape(len(obs),self.num_mixtures)
+        sigma = torch.cat(all_sigma, dim=1).reshape(len(obs),self.num_mixtures)
+        return BatchedNormalMixture1D(mixture_probs/mixture_probs.sum(dim=1).unsqueeze(-1), mu, sigma)
+
+    def forward(self, theta, obs):
+        q_x_given_obs = self.get_q_x_given_obs(obs)
+        log_prob = q_x_given_obs.log_prob(theta)
+        return -torch.mean(log_prob)
