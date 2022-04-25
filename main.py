@@ -43,19 +43,19 @@ class InferenceNetworkPQ_NormalMixture(nn.Module):
                                      output_size=num_mixtures,
                                      activation= nn.Tanh(),
                                      last_activation=torch.exp)
-        self.mu_net, self.offset_net = [MLP(num_layers, num_hidden_units, input_size)]*2
-        self.sigma_net = MLP(num_layers, num_hidden_units, input_size, last_activation=torch.exp)
+        self.mu_net = MLP(num_layers, num_hidden_units, input_size, output_size=num_mixtures)
+        self.sigma_net = MLP(num_layers, num_hidden_units, input_size,
+                             output_size=num_mixtures,last_activation=torch.exp)
 
     def get_q_x_given_obs(self, obs):
         mu = self.mu_net(obs)
         sigma = self.sigma_net(obs)
-        offset = self.offset_net(obs)
         mixture_probs = self.mixture_probs_net(obs)
 
-        means = torch.stack([mu + offset*i for i in range(self.num_mixtures)], dim=1)
-        stds = torch.stack([sigma]*self.num_mixtures, dim=1)
+        # means = torch.stack([mu + offset*i for i in range(self.num_mixtures)], dim=1)
+        # stds = torch.stack([sigma]*self.num_mixtures, dim=1)
 
-        return BatchedNormalMixture1D(mixture_probs/mixture_probs.sum(dim=1).unsqueeze(-1), means, stds)
+        return BatchedNormalMixture1D(mixture_probs/mixture_probs.sum(dim=1).unsqueeze(-1), mu, sigma)
 
     def forward(self, theta, obs):
         q_x_given_obs = self.get_q_x_given_obs(obs)
