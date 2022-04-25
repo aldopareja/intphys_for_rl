@@ -3,7 +3,7 @@ from torch import nn
 
 class MLP(nn.Module):
     def __init__(self, num_hidden_layers, num_hidden_units, input_size=1,
-                 output_size=1, activation=nn.ReLU(), last_activation=lambda x: x):
+                 output_size=1, activation=nn.ReLU(), last_activation=lambda x: x, unsqueeze = True):
 
         super().__init__()
         layers = [nn.Sequential(nn.Linear(input_size,num_hidden_units),activation)]
@@ -12,9 +12,14 @@ class MLP(nn.Module):
         layers += [nn.Sequential(nn.Linear(num_hidden_units, output_size))]
         self.network = nn.Sequential(*layers)
         self.last_activation = last_activation
+        self.unsqueeze = unsqueeze
 
     def forward(self,obs):
-        return self.last_activation(self.network(obs.unsqueeze(-1)).squeeze())
+        if self.unsqueeze:
+            emb = self.network(obs.unsqueeze(-1)).squeeze()
+        else:
+            emb = self.network(obs)
+        return self.last_activation(emb)
 
 class NormalMixture1D(torch.distributions.Distribution):
     def __init__(self, mixture_probs, means, stds):
