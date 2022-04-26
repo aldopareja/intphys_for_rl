@@ -1,42 +1,20 @@
 import torch
 torch.manual_seed(0)
-from utils import NormalMixture1D
-from main import InferenceNetworkPQ_NormalMixture, SeqGaussMixPosterior
-from matplotlib import pyplot as plt
-import seaborn as sns
+import  utils as u
+import main as m
 
-gen_model = NormalMixture1D([0.3,0.3,0.4], means=[-3, 2, 0], stds=[1,1,1])
+ts = torch.tensor([0.0,1.0,2,3,4,5,8,10,15,20,30,40,60,70,80])
+n_vars = 1
+batch_size = 1000
+d_model = 30
+noise_std_ratio = 0.1
 
-def get_traces(gen_model, num_traces, obs_std):
-    x = gen_model.sample(num_traces)
-    obs = torch.distributions.Normal(loc=x,scale=obs_std).sample((1,)).squeeze()
-    return x, obs
-
-def print_grads(model):
-    for p in model.parameters():
-        print('grads')
-        print(p.grad.max(), p.grad.min(), p.grad.mean())
-        print('abs')
-        print(p.max(), p.min(), p.mean())
-
-def amortize_inference(inference_network, gen_traces_fn, optimizer, num_iterations):
-    loss_history = []
-    for i in range(num_iterations):
-
-        x, obs = gen_traces_fn()
-        loss = inference_network(x, obs.unsqueeze(-1).unsqueeze(-1))
-        print(i, loss)
-        loss.backward()
-        optimizer.step()
-        optimizer.zero_grad()
-
-        loss_history.append(loss.item())
-
-    return loss_history
-
-gen_traces_fn = lambda: get_traces(gen_model, 100, 1.0)
-inference_network = SeqGaussMixPosterior(2)
+inference_network = m.SeqGaussMixPosteriorV2(num_mixtures=2, d_model=d_model,
+                                             num_obs_vars=n_vars,
+                                             num_trans_layers=1).cuda()
 optimizer = torch.optim.Adam(params=inference_network.parameters())
 
+gen_traces_fn = lambda: m.solve_ode_sample(batch_size, n_vars, [-10.0, 10.0], [-0.1, 0.1], noise_std_ratio, ts,
+                                          device='cuda')
 
-losses = amortize_inference(inference_network, gen_traces_fn, optimizer, 2000)
+losses = m.amortize_inference(inference_network, gen_traces_fn, optimizer, 2000)

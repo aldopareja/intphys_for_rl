@@ -3,7 +3,7 @@ from torch import nn
 
 class MLP(nn.Module):
     def __init__(self, num_hidden_layers, num_hidden_units, input_size=1,
-                 output_size=1, activation=nn.ReLU(), last_activation=lambda x: x, unsqueeze = True):
+                 output_size=1, activation=nn.ReLU(), last_activation=nn.Identity(), unsqueeze = True):
 
         super().__init__()
         layers = [nn.Sequential(nn.Linear(input_size,num_hidden_units),activation)]
@@ -40,3 +40,10 @@ class NormalMixture1D(torch.distributions.Distribution):
         normal_log_prob = self.normals.log_prob(value_expanded)
         category_log_prob = torch.log(self.mixture_probs)
         return torch.logsumexp(normal_log_prob + category_log_prob, dim=1)
+
+def print_grads(model):
+    for p in model.parameters():
+        print('grads')
+        print(p.grad.max(), p.grad.min(), p.grad.mean())
+        print('abs')
+        print(p.max(), p.min(), p.mean())
