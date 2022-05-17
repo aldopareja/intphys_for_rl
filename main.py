@@ -23,7 +23,7 @@ def solve_ode_sample(batch_size, n_vars, y_init_range, theta_range, noise_std_ra
     ts = ts.to(device)
 
     y_mean = odeint(lambda t, y: dy_dt(y, theta=theta), y_init, ts, rtol=1e-6, atol=1e-5)
-    y_obs = torch.distributions.Normal(loc=y_mean, scale=noise_std_ratio * torch.abs(y_mean)).rsample()
+    y_obs = torch.distributions.Normal(loc=y_mean, scale=noise_std_ratio * torch.abs(y_mean) + 1e-5).rsample()
     y_obs = y_obs.swapaxes(0, 1)
 
     return theta, y_obs
@@ -64,6 +64,14 @@ class BatchedMultivariateNormalMixture():
         category_log_prob = torch.log(self.mixture_probs)
 
         return torch.logsumexp(normal_log_prob + category_log_prob, dim=1)
+
+    def sample(self, num_samples):
+        sample = self.multivariatenormals.sample((num_samples,))
+        cat = torch.distributions.Categorical(self.mixture_probs)
+        cat_sample = cat.sample((num_samples,)).squeeze()
+        return sample[torch.arange(sample.shape[0]),
+                      torch.arange(sample.shape[1]),
+                      cat_sample]
 
 
 class SeqGaussMixPosterior(nn.Module):
@@ -236,7 +244,7 @@ class GaussianMixturePosterior(nn.Module):
         :return:
         '''
         output = self.dist_decoder(seqembed)
-        mix_p = output[:, :, 0]
+        mix_p = torch.exp(output[:, :, 0])
         means = output[:, :, 1:1 + self.num_means]
         covariance_terms = output[:, :, 1 + self.num_means:]
         covariance_matrices = self.get_covariance_matrices_from_vectors(covariance_terms,
@@ -247,7 +255,7 @@ class GaussianMixturePosterior(nn.Module):
                                                 covariance_matrices=covariance_matrices)
 
     @staticmethod
-    def get_covariance_matrices_from_vectors(covariance_terms, device, eps=0.01):
+    def get_covariance_matrices_from_vectors(covariance_terms, device, eps=0.001):
         '''
         :param covariance_terms: B x num_mixtures x n(n+1)/2 terms on the lower triangular matrices used to compute the covariance matrices
         :param device:
