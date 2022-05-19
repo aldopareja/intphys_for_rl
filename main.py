@@ -12,14 +12,14 @@ from utils import MLP, NormalMixture1D
 
 
 def dy_dt(y, theta):
-    dy_dt = torch.matmul(y, theta)
+    dy_dt = torch.einsum('bkj,bj->bk', theta,y)
     return dy_dt
 
 
 def solve_ode_sample(batch_size, n_vars, y_init_range, theta_range, noise_std_ratio, ts, device='cpu'):
     y_init = torch.distributions.Uniform(*torch.tensor(y_init_range, device=device)).rsample((batch_size, n_vars))
     theta_dist = torch.distributions.Uniform(*torch.tensor(theta_range, device=device))
-    theta = theta_dist.rsample((n_vars, n_vars))
+    theta = theta_dist.rsample((batch_size, n_vars, n_vars))
     ts = ts.to(device)
 
     y_mean = odeint(lambda t, y: dy_dt(y, theta=theta), y_init, ts, rtol=1e-6, atol=1e-5)
@@ -45,7 +45,7 @@ class BatchedNormalMixture1D():
 class BatchedMultivariateNormalMixture():
     def __init__(self, mixture_probs, means, covariance_matrices):
         '''
-        :param mixture_probs: Bxnum_mixtures
+        :param mixture_probs: Bxnum_mixtures should sum up to one on the num_mixtures direction
         :param means: B x num_mixtures x num_variables
         :param covariance_matrices: B x num_mixtures x num_variables x num_variables, each should be positive definite
 
@@ -57,7 +57,7 @@ class BatchedMultivariateNormalMixture():
 
     def log_prob(self, batched_x):
         '''
-        :param batched_obs: B x num_vars or 1 x num_vars (which would broadcast over the batch)
+        :param batched_obs: B x 1 x num_vars or 1 x 1 x num_vars (which would broadcast over the batch)
         :return: B x log_prob log probability of the given x for each of the batched multivariate gaussian mixtures.
         '''
         normal_log_prob = self.multivariatenormals.log_prob(batched_x)
@@ -255,7 +255,7 @@ class GaussianMixturePosterior(nn.Module):
                                                 covariance_matrices=covariance_matrices)
 
     @staticmethod
-    def get_covariance_matrices_from_vectors(covariance_terms, device, eps=0.001):
+    def get_covariance_matrices_from_vectors(covariance_terms, device, eps=0.000025):
         '''
         :param covariance_terms: B x num_mixtures x n(n+1)/2 terms on the lower triangular matrices used to compute the covariance matrices
         :param device:
@@ -281,9 +281,10 @@ class GaussianMixturePosterior(nn.Module):
         :return: negative log likelihood of theta given the inference network's posteriors approximation. Keeps gradients
                  to make this trainable.
         '''
+        batch_size = obs.shape[0]
         seqembed = self.obs_to_embed(obs)
         q_x_given_seqembed = self.get_q_x_given_seqembed(seqembed)
-        log_prob = q_x_given_seqembed.log_prob(theta.reshape(-1, self.num_latents))
+        log_prob = q_x_given_seqembed.log_prob(theta.reshape(batch_size, 1, self.num_latents))
         return -torch.mean(log_prob)
 
 
