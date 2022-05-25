@@ -253,7 +253,7 @@ class GaussianMixturePosterior(nn.Module):
         return BatchedMultivariateNormalMixture(mixture_probs=mix_p / mix_p.sum(dim=1, keepdim=True),
                                                 means=means,
                                                 covariance_matrices=covariance_matrices)
-
+    #
     @staticmethod
     def get_covariance_matrices_from_vectors(covariance_terms, device, eps=0.000025):
         '''
