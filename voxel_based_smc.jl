@@ -1,8 +1,39 @@
 using Gen, Seaborn
 
+# """
+# returns a function that computes what slots in a unit 2d grid are occupied given a set of object
+# positions.
+# """
+@gen function get_occupancy_grid(object_poses::Array{Float64,2},
+                                side_num_slots::Int,
+                                false_postive_noise::Real,
+                                false_negative_noise::Real)
+    bin_size = 1/side_num_slots
+    occupancy_grid = zeros(Bool, side_num_slots, side_num_slots)
+    for i = 1:side_num_slots, j = 1:side_num_slots
+        if ({(:false_pos, i, j)} ~ bernoulli(false_postive_noise))
+            occupancy_grid[i, j] = true
+        end
+    end
+    num_objects = size(object_poses)[1]
+    for o in 1:num_objects
+        pos = object_poses[o, :]
+
+        #ignore out of viewfield objects
+        if ~(all(0.0 .<= pos .<= 1.0)) || 
+            ({(:false_neg, o)} ~ bernoulli(false_negative_noise))
+            continue
+        end
+        idx1, idx2 = convert.(Int,(pos .÷ bin_size)) .+ 1
+        occupancy_grid[idx1, idx2] = true
+    end
+    return occupancy_grid
+end
+
 @dist num_objects_dist(p) = neg_binom(3, p) + 1
 
-@gen function multi_object(T::Int, num_objects::Int)
+@gen function multi_object(T::Int, num_objects::Int, side_num_slots::Int,
+    false_postive_noise::Real, false_negative_noise::Real)
 
     measurement_noise = 0.005
     velocity_var = 1e-5
@@ -11,34 +42,33 @@ using Gen, Seaborn
     #prior on the number of objects in a scene
     # num_objects ~ num_objects_dist(0.9)
 
-    xs = Array{Float64}(undef, num_objects, T, 2)
+    occupancy_grid_time = Array{Bool}(undef,T,side_num_slots,side_num_slots)
 
     #prior on velocity
-    v = [{(:v,o,1,i)} ~ uniform(-0.015,0.015) 
-         for o=1:num_objects ,i=1:num_dims]
-    
+    v = [{(:v, 1, o, i)} ~ uniform(-0.015, 0.015)
+         for o = 1:num_objects, i = 1:num_dims]
+
     #prior on position
-    x = [{(:x,o,1,i)} ~ uniform(0,1) 
-         for o=1:num_objects ,i=1:num_dims]
-    
-    #initial positions
-    [{(:z,o,1,i)} ~ normal(x[o,i], measurement_noise) 
-     for o=1:num_objects, i=1:num_dims]
+    x = [{(:x, 1, o, i)} ~ uniform(0, 1)
+         for o = 1:num_objects, i = 1:num_dims]
+
+    #initial measurements
+    occupancy_grid_time[1,:,:] = {(:occupancy_grid, 1)} ~ get_occupancy_grid(x,
+                                                    side_num_slots,
+                                                    false_postive_noise,
+                                                    false_negative_noise)
 
     for t in 2:T
         x += v
 
-        v = [{(:v,o,t,i)} ~ normal(v[o,i],velocity_var) 
-             for o=1:num_objects, i=1:num_dims]
-
-        [{(:z,o,t,i)} ~ normal(x[o,i], measurement_noise) 
-         for o=1:num_objects, i=1:num_dims]
+        v = [{(:v, t, o, i)} ~ normal(v[o, i], velocity_var)
+             for o = 1:num_objects, i = 1:num_dims]      
+        
+    occupancy_grid_time[t,:,:] = {(:occupancy_grid, t)} ~ get_occupancy_grid(x,
+                                                    side_num_slots,
+                                                    false_postive_noise,
+                                                    false_negative_noise)
     end
+    return occupancy_grid_time
 end
 
-trace = Gen.simulate(test, (10,10))
-Gen.get_choices(trace)
-
-sims = [Gen.simulate(test, ())[:num_objects] for i in 1:1000]
-displot(sims)
-display(gcf())
