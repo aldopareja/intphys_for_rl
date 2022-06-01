@@ -1,9 +1,5 @@
-using Gen, Seaborn, Luxor
-
-
-function not_in_unit(pos)
-    return ~(all(0.0 .<= pos .<= 1.0))
-end
+using Gen
+includet("viz.jl")
 
 """
 returns a function that computes what slots in a unit 2d grid are occupied given a set of object
@@ -34,7 +30,7 @@ returns an 2d occupancy grid over time depending on the movement of latent objec
 """
 @gen function multi_object(T::Int, num_objects::Int, side_num_slots::Int,
                             false_postive_noise::Real, false_negative_noise::Real,
-                            velocity_var::Real)
+                            velocity_var::Real, max_init_vel::Real)
 
 
     measurement_noise = 0.005
@@ -47,7 +43,7 @@ returns an 2d occupancy grid over time depending on the movement of latent objec
     occupancy_grid_time = Array{Bool}(undef, T, side_num_slots, side_num_slots)
 
     #prior on velocity
-    v = [{(:v, 1, o, i)} ~ uniform(-0.015, 0.015)
+    v = [{(:v, 1, o, i)} ~ uniform(-max_init_vel, max_init_vel)
          for o = 1:num_objects, i = 1:num_dims]
 
     #prior on position
@@ -78,46 +74,6 @@ returns an 2d occupancy grid over time depending on the movement of latent objec
     return xs, occupancy_grid_time
 end
 
-function render_trace(trace)
-    (T, num_objects, side_num_slots,
-        _, _) = Gen.get_args(trace)
-
-    xs, occupancy_grid_time = Gen.get_retval(trace)
-    fig_size = 1000
-
-    Drawing(fig_size, fig_size)
-    background("blanchedalmond")
-    setcolor("black")
-    origin()
-
-    #plot the observed occupancy grid
-    cell_size = fig_size ÷ side_num_slots
-    cells = Table(side_num_slots, side_num_slots, cell_size, cell_size)
-    for t in 1:T
-        for (r, c) in [(l[1], l[2]) for l in findall(occupancy_grid_time[t, :, :])]
-            Luxor.box(cells[r, c], cell_size, cell_size, :fill)
-        end
-    end
-
-    #plot the ground truth trajectories
-    origin(Point(0, 0))
-    # trace_choices = Gen.get_choices(trace)
-    arrow_colors = ("brown3", "green3", "darkorange2", "lightslateblue", "blue1")
-    for o in 1:num_objects
-        trajectory = Vector{Point}()
-        for t in 1:T
-            pos = xs[t, o, 2], xs[t, o, 1] #needed to reverse 1 and 2 because in luxor first coordinate is colunm
-            if not_in_unit(pos)
-                continue
-            end
-            push!(trajectory, Point(trunc.(Int, fig_size .* pos)))
-        end
-        setcolor(arrow_colors[o])
-        prettypoly(trajectory, action=:stroke)
-    end
-    finish()
-    preview()
-end
 
 function choicemap_from_grid(t::Int, occupancy_grid_time::Array{Bool,3})
 
@@ -140,9 +96,9 @@ function particle_filter(num_particles::Int, occupancy_grid_time::Array{Bool,3},
     init_obs = choicemap_from_grid(1, occupancy_grid_time)
     static_args = model_args[2:end]
     init_args = (1, static_args...) #change the time
-    
+
     state = Gen.initialize_particle_filter(multi_object, init_args, init_obs, num_particles)
-    
+
     T = size(occupancy_grid_time, 1)
     num_objects = model_args[2]
 
@@ -168,11 +124,27 @@ function particle_filter(num_particles::Int, occupancy_grid_time::Array{Bool,3},
     return Gen.sample_unweighted_traces(state, num_samples)
 end
 
-trace = Gen.simulate(multi_object, (4, 3, 10, 0.0002, 0.001, 5e-3))
-render_trace(trace)
-_, occupancy_grid_time = Gen.get_retval(trace)
-@time pf_traces = particle_filter(10000, occupancy_grid_time, 200, Gen.get_args(trace));
-render_trace(pf_traces[150])
 
+trace = Gen.simulate(multi_object, (100, 5, 20, 0.0002, 0.001, 5e-2, 0.05))
+xs, occupancy_grid_time = Gen.get_retval(trace)
+visualize() do 
+    draw_observation(occupancy_grid_time)
+    draw_object_trajectories_different_colors(xs)
+end
+@time pf_traces = particle_filter(100, occupancy_grid_time, 200, Gen.get_args(trace));
+visualize() do 
+    xs, occupancy_grid_time = Gen.get_retval(trace)
+    draw_observation(occupancy_grid_time)
+    draw_object_trajectories_single_color(xs)
+    for tr in pf_traces
+        xs = Gen.get_retval(trace)
+        draw_object_trajectories_single_color(xs; color="red", overlay="true")
+    end
+end
 
+vizualize() do 
+    render_trace(trace3) 
+    render_trace(trace2)
+    background("blanchedalmond")
+end
 
