@@ -47,8 +47,9 @@ returns an 2d occupancy grid over time depending on the movement of latent objec
          for o = 1:num_objects, i = 1:num_dims]
 
     #prior on position
-    x = [{(:x, 1, o, i)} ~ normal(0.5, 0.2)
-        #  {(:x, 1, o, i)} ~ uniform(0, 1)
+    x = [
+        # {(:x, 1, o, i)} ~ normal(0.5, 0.2)
+         {(:x, 1, o, i)} ~ uniform(0, 1)
          for o = 1:num_objects, i = 1:num_dims]
 
     xs[1, :, :] = x
@@ -95,25 +96,27 @@ function particle_filter(num_particles::Int, occupancy_grid_time::Array{Bool,3},
 
     init_obs = choicemap_from_grid(1, occupancy_grid_time)
     static_args = model_args[2:end]
-    init_args = (1, static_args...) #change the time
-
-    state = Gen.initialize_particle_filter(multi_object, init_args, init_obs, num_particles)
-
+    init_args = (1, static_args...) #change the time to 1 since only the first observation is in the first part
     T = size(occupancy_grid_time, 1)
     num_objects = model_args[2]
+    num_side_slots = model_args[3]
+    init_proposal_args = (num_objects, occupancy_grid_time, 2, 10.0*num_side_slots)
+
+    state = Gen.initialize_particle_filter(multi_object, init_args, init_obs, 
+                                           initial_pos_proposal, init_proposal_args,
+                                           num_particles)
+
+
+    mh_choices = [(:v,1,o,d) for o=1:num_objects, d=1:2][:]
 
     for t = 2:T
-        # apply a rejuvenation move to each particle only on one object/dim at a time
+        # apply a rejuvenation move to each particle only on one object/vel_dim at a time
         for i=1:num_particles
-            initial_choices = Array{Tuple{Symbol, Int64, Int64, Int64}}(undef, 2)
-            o = i % num_objects + 1
-            d = i % 2 + 1
-            initial_choices[1] = (:x,1,o,d)
-            initial_choices[2] = (:v,1,o,d)
-            initial_choices = select(initial_choices...)
-            state.traces[i], _  = mh(state.traces[i], initial_choices)
+            idx = i % length(mh_choices) + 1
+            particle_choice = select(mh_choices[idx])
+            state.traces[i], _  = mh(state.traces[i], particle_choice)
         end
-
+        mh_choices = [mh_choices; [(:v,t,o,d) for o=1:num_objects, d=1:2][:]]
         Gen.maybe_resample!(state, ess_threshold=num_particles / 2)
         obs = choicemap_from_grid(t, occupancy_grid_time)
         args = tuple(t, static_args...)
@@ -124,22 +127,68 @@ function particle_filter(num_particles::Int, occupancy_grid_time::Array{Bool,3},
     return Gen.sample_unweighted_traces(state, num_samples)
 end
 
+"""
+samples a 2d piecewise uniform with a high score over occupied 2d bins in the first num_init_time_steps.
+"""
+@gen function initial_pos_proposal(num_objects::Int, occupancy_grid_time::Array{Bool,3}, num_init_time_steps::Int, high_score::Float64)
+    num_bins = size(occupancy_grid_time)[end]
+    bin_size = 1/num_bins
 
-trace = Gen.simulate(multi_object, (100, 5, 20, 0.0002, 0.001, 5e-2, 0.05))
+    #reduce occupancy grid to a single matrix
+    occupancy_grid_time = occupancy_grid_time[1:num_init_time_steps, :, :]
+    occupancy_grid_time = reduce((x,y) -> x.|y, occupancy_grid_time; 
+                                dims=1, init=false)[1,:,:]
+
+    #assign a score to occupied grids
+    scores = occupancy_grid_time .* (high_score - 1) .+ 1.0
+
+    bounds = collect(0.0:bin_size:1.0)
+    x = Array{Float64}(undef,num_objects)
+    y = Array{Float64}(undef,num_objects)
+    for o=1:num_objects
+        #sample the y coordinate from the marginal
+        probs = sum(scores;dims=1)[:] # compute the marginal
+        probs /= sum(probs)
+        y[o] = {(:x,1,o,2)} ~ piecewise_uniform(bounds, probs)
+
+        #sample the x coordinate
+        y_bin_idx = trunc(Int, y[o]/bin_size) + 1 #find the sampled column
+        probs = scores[:,y_bin_idx]
+        probs /= sum(probs)
+        x[o] = {(:x,1,o,1)} ~ piecewise_uniform(bounds, probs)
+    end
+    return nothing
+end
+
+@gen function initial_pos_perturbation_proposal(prev_trace, std::Float64, dim::Int, object::Int, vel_pos::Symbol)
+    addr = (vel_pos,1,object,dim)
+    val = Gen.get_choice(prev_trace,addr).retval
+    new_pos = {addr} ~ normal(val,std)
+    return new_pos
+end
+
+function initial_pos_perturbation_move(trace, num_objects, std)
+    for o=1:num_objects, d=1:2, vp=[:v, :x]
+        Gen.mh(trace, initial_pos_perturbation_proposal, (std,d,o,vp))
+    end
+end
+
+
+trace = Gen.simulate(multi_object, (10, 3, 20, 0.0002, 0.001, 2e-2, 0.05))
 xs, occupancy_grid_time = Gen.get_retval(trace)
 visualize() do 
     draw_observation(occupancy_grid_time)
     draw_object_trajectories_different_colors(xs)
 end
-@time pf_traces = particle_filter(100, occupancy_grid_time, 200, Gen.get_args(trace));
+@time pf_traces = particle_filter(1000, occupancy_grid_time, 200, Gen.get_args(trace));
 visualize() do 
-    xs, occupancy_grid_time = Gen.get_retval(trace)
+    xs1, occupancy_grid_time = Gen.get_retval(trace)
     draw_observation(occupancy_grid_time)
-    draw_object_trajectories_single_color(xs)
     for tr in pf_traces
-        xs = Gen.get_retval(trace)
-        draw_object_trajectories_single_color(xs; color="red", overlay="true")
+        xs,_ = Gen.get_retval(tr)
+        draw_object_trajectories_single_color(xs; color="red", overlay=true)
     end
+    draw_object_trajectories_single_color(xs1)
 end
 
 vizualize() do 
@@ -147,4 +196,3 @@ vizualize() do
     render_trace(trace2)
     background("blanchedalmond")
 end
-
