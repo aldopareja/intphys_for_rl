@@ -1,3 +1,5 @@
+f\_i+1
+
 using Gen
 import LinearAlgebra
 includet("viz.jl")
@@ -31,50 +33,6 @@ end
 """
 returns an 2d occupancy grid over time depending on the movement of latent object trajectories.
 """
-# @gen function multi_object(T::Int, num_objects::Int, side_num_slots::Int,
-#   false_postive_noise::Real, false_negative_noise::Real,
-#   velocity_var::Real, max_init_vel::Real)
-
-
-#   measurement_noise = 0.005
-#   num_dims = 2
-
-#   #prior on the number of objects in a scene
-#   # num_objects ~ num_objects_dist(0.9)
-
-#   xs = Array{Float64}(undef, T, num_objects, num_dims)
-#   occupancy_grid_time = Array{Bool}(undef, T, side_num_slots, side_num_slots)
-
-
-
-#   #prior on position
-#   x = [
-#     # {(:x, 1, o, i)} ~ normal(0.5, 0.2)
-#     {(:x, 1, o, i)} ~ uniform(0, 1)
-#     for o = 1:num_objects, i = 1:num_dims]
-
-#   xs[1, :, :] = x
-
-#   #initial measurements
-#   occupancy_grid_time[1, :, :] = {(:occupancy_grid, 1)} ~ get_occupancy_grid(x,
-#     side_num_slots,
-#     false_postive_noise,
-#     false_negative_noise)
-
-#   for t in 2:T
-#     v = [{(:v, t, o, i)} ~ normal(v[o, i], velocity_var)
-#          for o = 1:num_objects, i = 1:num_dims]
-
-#     x += v
-#     xs[t, :, :] = x
-
-#     occupancy_grid_time[t, :, :] = {(:occupancy_grid, t)} ~ get_occupancy_grid(x,
-#       side_num_slots,
-#       false_postive_noise,
-#       false_negative_noise)
-#   end
-#   return xs, occupancy_grid_time
-# end
 
 @gen function multi_object(T::Int, num_objects::Int, side_num_slots::Int,
   false_postive_noise::Real, false_negative_noise::Real,
@@ -142,11 +100,11 @@ function choicemap_from_grid(t::Int, occupancy_grid_time::Array{Bool,3})
   return Gen.choicemap(choices...)
 end
 
-function particle_filter(num_particles::Int, occupancy_grid_time::Array{Bool,3}, num_samples::Int,
+function particle_filter(num_particles::Int, occupancy_grid_time::Array{Bool,3}, num_samples::Int, t_window::Int,
   model_args::Tuple)
 
   static_args = model_args[2:end]
-  init_args = (0, static_args...) #change the time to 1 since only the first observation is in the first part
+  init_args = (0, static_args...) #change the time to 0 since only the first observation is in the first part
   T = model_args[1]
   num_objects = model_args[2]
   num_side_slots = model_args[3]
@@ -157,47 +115,43 @@ function particle_filter(num_particles::Int, occupancy_grid_time::Array{Bool,3},
   state = Gen.initialize_particle_filter(multi_object, init_args, init_obs,
     initial_pos_proposal_pf, init_proposal_args,
     num_particles)
-  
-  # return state.traces
-
-  # for _=1:20
-  #   [state.traces[i] = init_pos_perturbation_move(state.traces[i],num_objects, high_score_proposal,
-  #                                                 occupancy_grid_time)
-  #    for i in 1:num_particles]
-  # end
-
-  # mh_choices = [(:v, 1, o, d) for o = 1:num_objects, d = 1:2][:]
 
   for t = 1:T
-    # apply a rejuvenation move to each particle only on one object/vel_dim at a time
-    accepts = Vector{Bool}(undef, num_particles*num_objects)
-    for i=1:num_particles
-      state.traces[i], a = Gen.mh(state.traces[i], initial_pos_proposal_mh, (num_objects, occupancy_grid_time, 1, high_score_proposal))
-      accepts[i] = a
-    end
-    @show sum(accepts), length(accepts)
-
-    # mh_choices = [mh_choices; [(:v, t, o, d) for o = 1:num_objects, d = 1:2][:]]
-    Gen.maybe_resample!(state, ess_threshold=num_particles / 8)
     obs = choicemap_from_grid(t+1, occupancy_grid_time)
     args = tuple(t, static_args...)
     Gen.particle_filter_step!(state, args, (UnknownChange(), [NoChange() for _ in 1:length(static_args)]...),
       obs)
 
-    accepts = Vector{Bool}(undef, num_particles*num_objects)
-    for i=1:num_particles
-      state.traces[i], a = Gen.mh(state.traces[i], vel_t_proposal, (t, 1, occupancy_grid_time, high_score_proposal))
-      accepts[i] = a
+    if t<4
+      # apply a rejuvenation move to each particle only on one object/vel_dim at a time
+      accepts = Vector{Bool}(undef, num_particles*num_objects)
+      Threads.@threads for i=1:num_particles
+        for o=1:num_objects
+          state.traces[i], a = Gen.mh(state.traces[i], initial_pos_proposal_mh, (o, occupancy_grid_time, 1, high_score_proposal))
+          accepts[(i-1)*num_objects + o] = a
+        end
+      end
+      DEBUG && @show sum(accepts), length(accepts)
+      Gen.maybe_resample!(state, ess_threshold=num_particles / 1.2)
     end
-    @show "vel", sum(accepts), length(accepts)
-    # accepts = Vector{Bool}(undef, num_particles*num_objects)
-    # for i=1:num_particles
-    #   for o in 1:num_objects
-    #     state.traces[i],a = Gen.mh(state.traces[i], vel_t_proposal, (t, o, occupancy_grid_time, high_score_proposal))
-    #     accepts[(i-1)* num_objects + o] = a
-    #   end
-    # end
-    # @show sum(accepts), length(accepts)
+
+    
+
+    init_t = max(1,t-t_window)
+    Δt_size = t - init_t + 1
+    accepts = Vector{Bool}(undef, num_particles*num_objects*(t - init_t + 1))
+    Threads.@threads for i=1:num_particles
+      for o in 1:num_objects
+        for Δt in init_t:t
+          selection = Gen.select((:v,Δt,o,1),(:v,Δt,o,2))
+          # state.traces[i],a = Gen.mh(state.traces[i], vel_t_proposal, (t, o, occupancy_grid_time, high_score_proposal))
+          state.traces[i],a = Gen.mh(state.traces[i], selection)
+          accepts[(i-1)*(num_objects*Δt_size) + (o-1)Δt_size + (Δt - init_t + 1)] = a
+        end
+      end
+    end
+    DEBUG && @show "vel", sum(accepts), length(accepts)
+    Gen.maybe_resample!(state, ess_threshold=num_particles / 1.2)
   end
 
   return Gen.sample_unweighted_traces(state, num_samples)
@@ -236,27 +190,16 @@ to the probability of a point in the bin represented by it.
   return row, col
 end
 
-# @gen function init_pos_proposal_mh(prev_trace, scores::Array{Float64,2},
-#                     addrCol::Tuple{Symbol,Int64,Int64,Int64},
-#                     addrRow::Tuple{Symbol,Int64,Int64,Int64},
-#                     anchorX::Float64,
-#                     anchorY::Float64)
-#   @trace(piecewise_uniform_2d_unit(scores,addrCol,addrRow,anchorX,anchorY))
-# end
-
 @gen function vel_t_proposal(trace, t, obj_id, occupancy_grid_time, high_score)
   xs, _ = Gen.get_retval(trace)
   row,col = xs[t,obj_id,:]
-  scores = scores_from_occupancy(occupancy_grid_time, (t+1, t+1), high_score)
+  scores = scores_from_occupancy(occupancy_grid_time, (t+1, t+1), 10000.0)
   vrow, vcol = piecewise_uniform_2d_unit(scores, (:na,1,1,1), (:na,1,1,2), row,col)
   #TODO: change the standard deviation
-  vrow = {(:v,t,obj_id,1)} ~ normal(vrow, 1e-3)
-  vcol = {(:v,t,obj_id,2)} ~ normal(vcol, 1e-3)
+  vrow = {(:v,t,obj_id,1)} ~ cauchy(vrow, 1/20)
+  vcol = {(:v,t,obj_id,2)} ~ cauchy(vcol, 1/20)
+  return [vrow, vcol]
 end
-
-# function vel_t_perturb(trace, t)
-
-# end
 
 function scores_from_occupancy(occupancy_grid_time::Array{Bool,3}, interval::Tuple{Int,Int},
                                high_score::Float64)
@@ -270,14 +213,14 @@ function scores_from_occupancy(occupancy_grid_time::Array{Bool,3}, interval::Tup
   return scores
 end
 
-@gen function initial_pos_proposal_mh(trace,num_objects::Int, occupancy_grid_time::Array{Bool,3},
+@gen function initial_pos_proposal_mh(trace, o::Int, occupancy_grid_time::Array{Bool,3},
   num_init_time_steps::Int, high_score::Float64)
 
   scores = scores_from_occupancy(occupancy_grid_time, (1,num_init_time_steps), high_score)
 
-  for o=1:num_objects
-    @trace(piecewise_uniform_2d_unit(scores, (:x,1,o,2), (:x,1,o,1), 0.0, 0.0))
-  end
+  # for o=1:num_objects
+  @trace(piecewise_uniform_2d_unit(scores, (:x,1,o,2), (:x,1,o,1), 0.0, 0.0))
+  # end
 end
 
 @gen function initial_pos_proposal_pf(num_objects::Int, occupancy_grid_time::Array{Bool,3},
@@ -307,13 +250,13 @@ function init_pos_perturbation_move(trace, num_objects, high_score, occupancy_gr
 end
 
 
-trace = Gen.simulate(multi_object, (10, 1, 20, 0.0002, 0.001, 2e-2, 0.05))
+trace = Gen.simulate(multi_object, (3, 5, 20, 0.0002, 0.001, 2e-2, 0.05))
 xs, occupancy_grid_time = Gen.get_retval(trace)
 visualize() do
   draw_observation(occupancy_grid_time[:,:,:])
   draw_object_trajectories_different_colors(xs)
 end
-@time pf_traces = particle_filter(1000, occupancy_grid_time, 400, Gen.get_args(trace));
+@time pf_traces = particle_filter(10000, occupancy_grid_time, 1000, 3, Gen.get_args(trace));
 visualize() do
   xs1, occupancy_grid_time = Gen.get_retval(trace)
   draw_observation(occupancy_grid_time)
